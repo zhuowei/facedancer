@@ -33,18 +33,22 @@ class USBExtigyDevice(USBDevice):
                 raw : bytes = PADDING_BYTES
                 def get_descriptor(self) -> bytes:
                     return raw
+    class _Configuration2(USBConfiguration):
+        number: int = 2
 
     @vendor_request_handler(number=0x10)
     def handle_vendor_boot_message(self, request):
         logging.info("Received Extigy vendor boot message")
-        self.received_vendor_boot_message = True
+        #self.received_vendor_boot_message = True
         request.acknowledge()
 
     def get_descriptor(self) -> bytes:
         a = super().get_descriptor()
         if self.received_vendor_boot_message:
             b = bytearray(a)
-            b[0x11] = 0xff
+            b[0x8:0x8+2] = b"\x63\x07" # idVendor
+            b[0xa:0xa+2] = b"\x12\x20" # idProduct
+            b[0x11] = 0xff # bNumConfigurations
             a = bytes(b)
         return a
 
