@@ -149,10 +149,8 @@ class WacomHIDUSBDevice(USBDevice):
             def handle_hid_set_report(self, request: USBControlRequest):
                 print(request)
                 print(request.data)
-                # this does not work
-                # outdata = bytes(request.length)
-                # request.reply(outdata)
-                # print(outdata)
-                request.stall()
+                outdata = bytearray(4096)
+                request.reply(outdata)
+                print(outdata)
 
 main(WacomHIDUSBDevice, run_monterey_jack())

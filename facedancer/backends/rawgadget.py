@@ -370,7 +370,10 @@ class RawGadgetApp(FacedancerApp):
         logging.info(f'send_on_endpoint: {ep_num=} {len(data)=:0x} {blocking=}')
         if ep_num == 0:
             if self.last_control_direction == self.HOST_TO_DEVICE:
-                self.api.ep0_read(bytes(data))
+                # zhuowei - hack: copy data back...
+                rv, return_data = self.api.ep0_read(bytes(data))
+                if rv > 0 and isinstance(data, bytearray):
+                    data[0:rv] = return_data[0:rv]
             else:
                 self.api.ep0_write(bytes(data))
         else:
