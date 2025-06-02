@@ -96,16 +96,6 @@ class WacomHIDReportDescriptor(HIDReportDescriptor):
         USAGE            (HID_USAGE_DIGITIZER_PEN),
         COLLECTION       (HIDCollection.APPLICATION),
 
-        # anything is fine; just need to pass
-        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/wacom_sys.c;l=446;drc=87beb148038d477fb72113e6ae121a37adc3af5e
-        USAGE_PAGE       (HIDUsagePage.DIGITIZER),
-        USAGE(HID_USAGE_DIGITIZER_CONTACTID),
-        LOGICAL_MINIMUM (0),
-        LOGICAL_MAXIMUM (0),
-        REPORT_SIZE      (8),
-        REPORT_COUNT     (1),
-        INPUT            (variable=True),
-
         # This report is allocated with hid_alloc_report_buf and will leak uninitialized memory.
         # thanks to xyzz for figuring this out.
         # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/wacom_sys.c;l=2476;drc=87beb148038d477fb72113e6ae121a37adc3af5e
