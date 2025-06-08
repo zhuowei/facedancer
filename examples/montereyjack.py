@@ -9,6 +9,7 @@ from facedancer.future.request import *
 from facedancer.classes import *
 from facedancer.classes.hid.usage import *
 from facedancer.classes.hid.descriptor import *
+from facedancer.classes.hid.keyboard import *
 
 """
 A composite device:
@@ -30,7 +31,7 @@ A composite device:
  - allocate field C
  - fields for a standard keyboard
 - camera
- - overwrite C to point to B
+ - overwrite A to point to B
 """
 
 # allocate 32k hid_fields A, B, C
@@ -196,9 +197,153 @@ class MultitouchInputReportWithBigInputFieldDescriptor(HIDReportDescriptor):
         END_COLLECTION   (),
     )
 
+# facedancer/devices/keyboard.py's descriptor with LEDs and our read field
+# Specifies how many simultaneously keys we want to support.
+KEY_ROLLOVER = 8
+
+@use_inner_classes_automatically
+class KeyboardReportDescriptor(HIDReportDescriptor):
+    fields : tuple = (
+        # Identify ourselves as a keyboard.
+        USAGE_PAGE       (HIDUsagePage.GENERIC_DESKTOP),
+        USAGE            (HIDGenericDesktopUsage.KEYBOARD),
+        COLLECTION       (HIDCollection.APPLICATION),
+        USAGE_PAGE       (HIDUsagePage.KEYBOARD),
+
+        # Modifier keys.
+        # These span the full range of modifier key codes (left control to right meta),
+        # and each has two possible values (0 = unpressed, 1 = pressed).
+        USAGE_MINIMUM    (KeyboardKeys.LEFTCTRL),
+        USAGE_MAXIMUM    (KeyboardKeys.RIGHTMETA),
+        LOGICAL_MINIMUM  (0),
+        LOGICAL_MAXIMUM  (1),
+        REPORT_SIZE      (1),
+        REPORT_COUNT     (KeyboardKeys.RIGHTMETA - KeyboardKeys.LEFTCTRL + 1),
+        INPUT            (variable=True),
+
+        # One byte of constant zero-padding.
+        # This is required for compliance; and Windows will ignore this report
+        # if the zero byte isn't present.
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (1),
+        INPUT            (constant=True),
+
+        # Capture our actual, pressed keyboard keys.
+        # Support a standard, 101-key keyboard; which has
+        # keycodes from 0 (NONE) to 101 (COMPOSE).
+        #
+        # We provide the capability to press up to eight keys
+        # simultaneously. Setting the REPORT_COUNT effectively
+        # sets the key rollover; so 8 reports means we can have
+        # up to eight keys pressed at once.
+        USAGE_MINIMUM    (KeyboardKeys.NONE),
+        USAGE_MAXIMUM    (KeyboardKeys.COMPOSE),
+        LOGICAL_MINIMUM  (KeyboardKeys.NONE),
+        LOGICAL_MAXIMUM  (KeyboardKeys.COMPOSE),
+
+        REPORT_SIZE      (8),
+        REPORT_COUNT     (KEY_ROLLOVER),
+        INPUT            (),
+
+        # our LED field...
+        USAGE_PAGE       (HIDUsagePage.LEDS),
+        USAGE_MINIMUM    (1),
+        USAGE_MAXIMUM    (5),
+        REPORT_SIZE      (1),
+        REPORT_COUNT     (5),
+        OUTPUT           (variable=True),
+
+        REPORT_SIZE      (1),
+        REPORT_COUNT     (3),
+        OUTPUT           (constant=True),
+
+        # and our read output field.
+        USAGE_PAGE       (0xff, 0xff), # vendor defined
+        USAGE_MINIMUM    (0),
+        USAGE_MAXIMUM    (0x50, 0x02),
+        LOGICAL_MINIMUM  (0),
+        LOGICAL_MAXIMUM  (0),
+        REPORT_SIZE      (32),
+        REPORT_COUNT     (1),
+        OUTPUT           (variable=True),
+
+        # End the report.
+        END_COLLECTION   (),
+    )
+
+USB_SUBCLASS_VIDEO_CONTROL = 1
+USB_SUBCLASS_VIDEO_STREAMING = 2
+USB_DT_CS_INTERFACE = 0x24
+
+UVC_VC_HEADER = 1
+
+UVC_VS_UNDEFINED = 0
+UVC_VS_INPUT_HEADER = 1
+UVC_VS_FORMAT_DV = 0x0c
+
 HID_REQ_GET_REPORT = 0x1
 HID_REQ_SET_REPORT = 0x9
 HID_REQ_SET_IDLE = 0xa
+
+@use_inner_classes_automatically
+class UVCStandardControlDescriptor(USBClassDescriptor):
+    number: int = 0
+    raw: bytes = bytes([
+            0x0d, # bLength
+            USB_DT_CS_INTERFACE, # bDescriptorType
+            UVC_VC_HEADER, # bDescriptorSubtype
+            0x00, 0x01, # bcdUVC
+            0x0d, 0x00,# wTotalLength
+            0x00, 0x00, 0x00, 0x00, # dwClockFrequency
+            0x1, # bInCollection
+            0x1, # baInterfaceNr(0)
+    ])
+
+@use_inner_classes_automatically
+class UVCStreamingDescriptor(USBClassDescriptor):
+    number: int = 0
+    raw: bytes = bytes([
+        14, #bLength
+        USB_DT_CS_INTERFACE, #bDescriptorType
+        UVC_VS_INPUT_HEADER, #bDescriptorSubtype
+        1, #bNumFormats
+        14 + 9, 0x00, #wTotalLength
+        0x82, # bEndpointAddress
+        0x00, # bmInfo
+        0x02, # bTerminalLink
+        0x00, # bStillCaptureMethod
+        0x00, # bTriggerSupport
+        0x00, # bTriggerUsage
+        0x01, # bControlSize
+        0x00, # bmaControls(0)
+    ]) + bytes([
+        9, # bLength
+        USB_DT_CS_INTERFACE, # bDescriptorType
+        UVC_VS_FORMAT_DV, # bDescriptorSubtype
+        0, # 3
+        0, # 4
+        0, # 5
+        0, # 6
+        0, # 7
+        0, # 8: dv format])
+    ])
+    """
+    + bytes([
+        26 + 4*57, # bLength
+        USB_DT_CS_INTERFACE, # bDescriptorType
+        UVC_VS_UNDEFINED, # bDescriptorSubtype
+        1, # bFrameIndex
+        0, # bmCapabilities
+        0x00, 0x00, # wWidth
+        0x00, 0x00, # wHeight
+        0x00, 0x00, 0x00, 0x00, # dwMinBitRate
+        0x00, 0x00, 0x00, 0x00, # dwMaxBitRate
+        0x00, 0x00, 0x00, 0x00, # dwMaxVideoFrameBufferSize
+        0x00, 0x00, 0x00, 0x00, # dwDefaultFrameInterval
+        57, # bFrameIntervalType
+    ] + [0x41, 0x41, 0x41, 0x41]*57 # dwFrameInterval(n)
+    )
+    """
 
 EXPECTED_HID_FIELD_APPLICATION_VALUE = 0x10006
 
@@ -208,8 +353,8 @@ g_field_c_usage_ptr = 0
 
 @use_inner_classes_automatically
 class InitialHIDUSBDevice(USBDevice):
-    vendor_id: int = 0x1337
-    product_id: int = 0xbeef
+    vendor_id: int = 0x04f2
+    product_id: int = 0xb071
     class KeyboardConfiguration(USBConfiguration):
         class AllocateThenFailInterface(USBInterface):
             class_number : int = USBDeviceClass.HID
@@ -357,6 +502,47 @@ class InitialHIDUSBDevice(USBDevice):
                 # application should be 0x10006 (GENERIC_DESKTOP, KEYBOARD)
                 if application == EXPECTED_HID_FIELD_APPLICATION_VALUE:
                     g_field_c_usage_ptr = usage_ptr
+
+        class KeyboardInterface(USBInterface):
+            class_number : int = USBDeviceClass.HID
+            number: int = 4
+            class KeyEventEndpoint(USBEndpoint):
+                number        : int             = 7
+                direction     : USBDirection    = USBDirection.IN
+                transfer_type : USBTransferType = USBTransferType.INTERRUPT
+                interval      : int             = 10
+            class USBClassDescriptor(USBClassDescriptor):
+                number      : int   =  USBDescriptorTypeNumber.HID
+                raw         : bytes = b'\x09\x21\x10\x01\x00\x01\x22' + struct.pack("<H", len(KeyboardReportDescriptor()()))
+            class ReportDescriptor(KeyboardReportDescriptor):
+                pass
+
+            @class_request_handler(number=HID_REQ_SET_IDLE)
+            @to_this_interface
+            def handle_get_interface_request(self, request):
+                # Silently stall HID_REQ_SET_IDLE class requests.
+                request.stall()
+
+            @class_request_handler(number=HID_REQ_SET_REPORT)
+            @to_this_interface
+            def handle_hid_set_report(self, request: USBControlRequest):
+                outdata = bytearray(request.length)
+                request.reply(outdata)
+                # TODO(zhuowei): doesn't work...
+                print(outdata.hex(' '))
+        class USBWebcamControlInterface(USBInterface):
+            number : int = 5
+            class_number    : int = USBDeviceClass.VIDEO
+            subclass_number    : int = USB_SUBCLASS_VIDEO_CONTROL
+            class ReportDescriptor(UVCStandardControlDescriptor):
+                pass
+        class USBWebcamStreamingInterface(USBInterface):
+            number : int = 6
+            class_number    : int = USBDeviceClass.VIDEO
+            subclass_number    : int = USB_SUBCLASS_VIDEO_STREAMING
+            class ReportDescriptor(UVCStreamingDescriptor):
+                # TODO(zhuowei): modify based on addresses...
+                pass
 
 async def run_monterey_jack():
     logging.info("Beginning Monterey Jack...")
